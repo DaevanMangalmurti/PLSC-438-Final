@@ -1,0 +1,674 @@
+---
+title: "PLSC-438-Final"
+output: html_document
+date: "2023-12-18"
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(haven)
+library(gt)
+library(sf)
+library(giscoR)
+library(scales)
+library(readxl)
+library(glue)
+library(fixest)
+library(modelsummary)
+library(rdrobust)
+library(cowplot)
+```
+
+# 1
+Read in the necessary data files: two from Lei and Zhou 2022 with information on cities, subways, and politicians' promotions, and one self-collected dataset with information on the construction of intercity high-speed rail (HSR).
+```{r}
+cities <- read_dta("data/subway_analysis_use.dta")
+province <- read_dta("data/subway_clean_prov_use.dta")
+hsr <- read_xlsx("data/hsr.xlsx")
+```
+
+# 2
+Clean up the high-speed rail dataset. Convert the "Year" values in the high-speed rail dataset into doubles so that they can be merged with the "Year" values in the subway dataset. Merge the high-speed rail and city-subway datasets.
+```{r}
+hsr[is.na(hsr)] <- 0
+
+hsr <- hsr |> 
+  pivot_longer(
+    cols = c("2003":"2022"),
+    cols_vary = "fastest",
+    names_to = "Year",
+    values_to = "HSR_Approval"
+  )
+
+hsr$Year <- as.double(hsr$Year)
+
+combo <- left_join(cities, hsr, by = c("City_Code", "Year")) |> 
+  select(City_Code, EN_Name, Province, Year, HSR_Approval, everything())
+```
+
+# 3.1
+This is the code to make a summary statistics table like Table 1 in Lei and Zhou 2022, but with standard deviations added.
+```{r}
+combo |> 
+  select(Mayor_promotion3y, Mayor_connection_work, Mayor_age, Per_pop, gdp, 
+         rev, GRP_growth, 
+         Mayor_plan, inv1_per, GRP_per, land_per, rev_per) |>
+  pivot_longer(cols = everything()) |> 
+  group_by(name) |> 
+  summarize(
+    mean = mean(value, na.rm = TRUE),
+    sd = sd(value, na.rm = TRUE),
+    min = min(value, na.rm = TRUE),
+    max = max(value, na.rm = TRUE),
+    n = sum(!is.na(value))
+  ) |> 
+  mutate(name = recode_factor(
+    name,
+    Mayor_promotion3y = "Mayor promoted within three years",
+    Mayor_connection_work = "Mayor connection",
+    Mayor_age = "Mayor age",
+    Per_pop = "City population",
+    gdp = "City GDP (billion ¥)",
+    rev = "City fiscal revenue (billion ¥)",
+    GRP_growth = "City GDP growth rate (%)",
+    Mayor_plan = "Mayor obtaining subway approval",
+    inv1_per = "City investment in infrastucture per capita (¥)",
+    GRP_per = "City GDP per capita (¥)",
+    land_per = "City land sales revenue per capita (¥)",
+    rev_per = "City fiscal revenue per capita (¥)"
+  )) |> 
+  arrange(name) |> 
+  relocate(n, .after = name) |> 
+  gt() |> 
+  cols_align(align = "left", columns = name) |> 
+  cols_label(name = "Variable", mean = "Mean", sd = "Std. Dev.", min = "Min",
+             max = "Max", n = "N") |> 
+  fmt_number(columns = c(mean, sd, min, max), decimals = 2) |> 
+  fmt_integer(columns = n) |> 
+  opt_table_font(font = "monospace-code")
+```
+
+# 3.2
+This is the code to make a summary statistics table specific to high-speed rail approval and party secretary data.
+```{r}
+combo |> 
+  select(PS_promotion3y, PS_connection_work, PS_c_prov_exp,
+         PS_c_central_exp, PS_promotion3y, Plan_Pass, Mayor_plan, PS_plan,
+         PS_age, HSR_Approval) |>
+  pivot_longer(cols = everything()) |> 
+  group_by(name) |> 
+  summarize(
+    mean = mean(value, na.rm = TRUE),
+    sd = sd(value, na.rm = TRUE),
+    min = min(value, na.rm = TRUE),
+    max = max(value, na.rm = TRUE),
+    n = sum(!is.na(value))
+  ) |> 
+  mutate(name = recode_factor(
+    name,
+    PS_promotion3y = "Party secretary promoted within three years",
+    PS_age = "Party secretary age",
+    PS_connection_work = "Party secretary connection with PPS",
+    PS_c_prov_exp = "Party secretary's experience in the provincial government",
+    PS_c_central_exp = "Party secretary's experience in the central government",
+    Plan_Pass = "Subway plan passed",
+    Mayor_plan = "Mayor obtaining subway approval",
+    PS_plan = "Party secretary obtaining subway approval",
+    HSR_Approval = "High-speed rail plan passed"
+  )) |> 
+  arrange(name) |> 
+  relocate(n, .after = name) |> 
+  gt() |> 
+  cols_align(align = "left", columns = name) |> 
+  cols_label(name = "Variable", mean = "Mean", sd = "Std. Dev.", min = "Min",
+             max = "Max", n = "N") |> 
+  fmt_number(columns = c(mean, sd, min, max), decimals = 2) |> 
+  fmt_integer(columns = n) |> 
+  opt_table_font(font = "monospace-code")
+```
+
+# 3.3
+This is the code to make the summary statistics table that is Table 1 in my paper. It contains information on the variables "Mayor_promotion3y," "PS_promotion3y," "HSR_Approval," "Mayor_connection_work," "PS_connection_work," "Mayor_age," "PS_age," "Per_pop," "gdp," "rev," "GRP_growth," "inv1_per," "GRP_per," "land_per," and "rev_per."
+```{r}
+combo |> 
+  select(Mayor_promotion3y, PS_promotion3y, HSR_Approval, Per_pop, gdp, rev, inv1_per, GRP_per, land_per, rev_per) |> 
+  pivot_longer(cols = everything()) |> 
+  group_by(name) |> 
+  summarize(
+    n = sum(!is.na(value)),
+    mean = mean(value, na.rm = TRUE),
+    min = min(value, na.rm = TRUE),
+    max = max(value, na.rm = TRUE)
+  ) |> 
+  mutate(name = recode_factor(
+    name,
+    Mayor_promotion3y = "Mayor promoted within three years",
+    PS_promotion3y = "Party secretary promoted within three years",
+    HSR_Approval = "High-speed rail project approved",
+    Per_pop = "City population",
+    gdp = "City GDP (billion ¥)",
+    rev = "City fiscal revenue (billion ¥)",
+    GRP_growth = "City GDP growth rate (%)",
+    inv1_per = "City investment in infrastucture per capita (¥)",
+    GRP_per = "City GDP per capita (¥)",
+    land_per = "City land sales revenue per capita (¥)",
+    rev_per = "City fiscal revenue per capita (¥)"
+  )) |> 
+  arrange(name) |> 
+  relocate(n, .after = name) |> 
+  gt() |> 
+  cols_align(align = "left", columns = name) |> 
+  cols_label(name = "Variable", mean = "Mean", min = "Min", max = "Max", n = "N") |> 
+  fmt_number(columns = c(mean, min, max), decimals = 2) |> 
+  fmt_integer(columns = n) |> 
+  opt_table_font(font = system_fonts("transitional")) |> 
+  gtsave("table1_sumstats.tex")
+```
+
+# 4.1
+This code defines the global controls I use throughout this paper. I create a vector for mayoral controls, a vector for city controls, and a vector for party-secretarial controls.
+```{r}
+mayor_controls <- colnames(combo)
+mayor_controls <- mayor_controls[c(12, 14:20, 50, 105:106)]
+mayor_controls <- paste(mayor_controls, collapse = " + ")
+
+city_controls <- colnames(combo)
+city_controls <- city_controls[c(59, 90:92)]
+city_controls <- paste(city_controls, collapse = " + ")
+
+ps_controls <- colnames(combo) |> 
+  str_subset("PS_")
+ps_controls <- ps_controls[c(1:8, 16:18)]
+ps_controls <- paste(ps_controls, collapse = " + ")
+```
+
+# 4.2
+This code runs Lei and Zhou's difference-in-difference identification strategy for subway approval. Begin by dropping the 15 vice-provincial-level cities. Run each of the models in Table 1 (naive, mayoral controls, mayoral and city controls, mayoral and city controls with province-year fixed effects). Run the placebo model in Table A11 (naive, party-secretarial controls, party-secretarial and city controls, party-secretarial and city controls with province-year fixed effects).
+```{r}
+dropped <- combo |> 
+  filter(fsj2 == 0)
+
+# Table 1, Specification 1
+mayor_id1 <- glue("Mayor_promotion3y ~ Mayor_plan | City_Code + Year")
+mayor_id1 <- feols(as.formula(mayor_id1), data = dropped, cluster = "City_Code")
+
+# Table 1, Specification 2
+mayor_id2 <- glue("Mayor_promotion3y ~ Mayor_plan + {mayor_controls} | City_Code + Year")
+mayor_id2 <- feols(as.formula(mayor_id2), data = dropped, cluster = "City_Code")
+
+# Table 1, Specification 3
+mayor_id3 <- glue("Mayor_promotion3y ~ Mayor_plan + {mayor_controls} + {city_controls} | City_Code + Year")
+mayor_id3 <- feols(as.formula(mayor_id3), data = dropped, cluster = "City_Code")
+
+# Table 1, Specification 4
+mayor_id4 <- glue("Mayor_promotion3y ~ Mayor_plan + {mayor_controls} + {city_controls} | City_Code + Year + provinceyear")
+mayor_id4 <- feols(as.formula(mayor_id4), data = dropped, cluster = "City_Code")
+
+# Table 1, Regression table
+modelsummary(list(mayor_id1, mayor_id2, mayor_id3, mayor_id4),
+             coef_omit = c(2:16),
+             gof_map = c("nobs", "FE: City_Code", "FE: Year", "FE: provinceyear"))
+
+# Run the placebo model in Table A11
+# Table A11, Specification 1
+ps_id1 <- glue("PS_promotion3y ~ PS_plan | City_Code + provinceyear")
+ps_id1 <- feols(as.formula(ps_id1), data = dropped, cluster = "City_Code")
+
+# Table A11, Specification 2
+ps_id2 <- glue("PS_promotion3y ~ PS_plan + {ps_controls} | City_Code + provinceyear")
+ps_id2 <- feols(as.formula(ps_id2), data = dropped, cluster = "City_Code")
+
+# Table A11, Specification 3
+ps_id3 <- glue("PS_promotion3y ~ PS_plan + {ps_controls} + {city_controls} | City_Code + provinceyear")
+ps_id3 <- feols(as.formula(ps_id3), data = dropped, cluster = "City_Code")
+
+# Table A11, Regression table
+modelsummary(list(ps_id1, ps_id2, ps_id3),
+             coef_omit = c(2:16),
+             gof_map = c("nobs", "FE: City_Code", "FE: Year", "FE: provinceyear"))
+```
+
+# 4.3
+This is the for Table 2 in my paper. It runs a difference-in-difference identification strategy for high-speed rail approval with the filtered dataset used in the subway approval-mayoral promotion identification strategy. I run mayoral promotion first, then party secretary promotion. I add a specification to the party secretary models that matches the fourth mayoral model. This code find that regardless of which variation on the promotion variable you use, there is not a significant relationship between promotion and high-speed rail approval. This is also true if you lag or lead the "HSR_Approval" variable.
+```{r}
+# Run the four mayoral specifications
+# Specification 1
+mayor_hsr1 <- glue("Mayor_promotion3y ~ HSR_Approval | City_Code + Year")
+mayor_hsr1 <- feols(as.formula(mayor_hsr1), data = combo, cluster = "City_Code")
+
+# Specification 2
+mayor_hsr2 <- glue("Mayor_promotion3y ~ HSR_Approval + {mayor_controls} | City_Code + Year")
+mayor_hsr2 <- feols(as.formula(mayor_hsr2), data = combo, cluster = "City_Code")
+
+# Specification 3
+mayor_hsr3 <- glue("Mayor_promotion3y ~ HSR_Approval + {mayor_controls} + {city_controls} | City_Code + Year")
+mayor_hsr3 <- feols(as.formula(mayor_hsr3), data = combo, cluster = "City_Code")
+
+# Specification 4
+mayor_hsr4 <- glue("Mayor_promotion3y ~ HSR_Approval + {mayor_controls} + {city_controls} | City_Code + Year + provinceyear")
+mayor_hsr4 <- feols(as.formula(mayor_hsr4), data = combo, cluster = "City_Code")
+
+# Run the four party secretary specifications
+# Specification 1
+ps_hsr1 <- glue("PS_promotion3y ~ HSR_Approval | City_Code + Year")
+ps_hsr1 <- feols(as.formula(ps_hsr1), data = combo, cluster = "City_Code")
+
+# Specification 2
+ps_hsr2 <- glue("PS_promotion3y ~ HSR_Approval + {ps_controls} | City_Code + Year")
+ps_hsr2 <- feols(as.formula(ps_hsr2), data = combo, cluster = "City_Code")
+
+# Specification 3
+ps_hsr3 <- glue("PS_promotion3y ~ HSR_Approval + {ps_controls} + {city_controls} | City_Code + Year")
+ps_hsr3 <- feols(as.formula(ps_hsr3), data = combo, cluster = "City_Code")
+
+# Specification 4
+ps_hsr4 <- glue("PS_promotion3y ~ HSR_Approval + {ps_controls} + {city_controls} | City_Code + Year + provinceyear")
+ps_hsr4 <- feols(as.formula(ps_hsr4), data = combo, cluster = "City_Code")
+
+# Regression Table
+table2 <- modelsummary(list(
+                  "(1)" = mayor_hsr1, 
+                  "(2)" = mayor_hsr2, 
+                  "(3)" = mayor_hsr3, 
+                  "(4)" = mayor_hsr4, 
+                  "(5)" = ps_hsr1, 
+                  "(6)" = ps_hsr2, 
+                  "(7)" = ps_hsr3, 
+                  "(8)" = ps_hsr4),
+             coef_map = c("HSR_Approval", "mayor_controls", "ps_controls", "city_controls"),
+             gof_map = c("nobs", "FE: City_Code", "FE: Year", "FE: provinceyear"),
+             output = "gt")
+
+table2 |> 
+  tab_header(title = "HSR Approval and Prefectural Official Promotion",
+             subtitle = "Promotion within three years") |> 
+  text_replace(pattern = "^HSR_Approval",
+               replacement = "HSR Approval") |> 
+  text_replace(pattern = "^FE: City_Code",
+               replacement = "City FE") |> 
+  text_replace(pattern = "^FE: Year",
+               replacement = "Year FE") |> 
+  text_replace(pattern = "^FE: provinceyear",
+               replacement = "Province-year FE") |> 
+  tab_spanner(label = "Mayor", columns = 2:5) |> 
+  tab_spanner(label = "Party Secretary", columns = 6:9) |> 
+  opt_align_table_header(align = "left") |> 
+  opt_table_font(font = system_fonts("transitional")) |> 
+  tab_caption(caption = "Standard errors in parentheses are clustered at the city level. Mayor controls are: gender, ethnicity, age, education, political connection with provincial party secretary, and previous work experience in county government, provincial government, central government, state-owned enterprises, university, and the Communist Youth League. Party secretary controls are: gender, ethnicity, age, education, political connection with provincial party secretary, and previous work experience in provincial government, central government, state-owned enterprises, university, and the Communist Youth League. City controls are population, GDP, fiscal revenue, and GDP growth rate in the previous year. FE means fixed effects. Mayor and city controls are taken from Lei and Zhou 2022.") |> 
+  gtsave("table2_didreg.tex")
+  
+
+```
+
+# 5.1
+This code creates the subset of the "combo" dataset that is used for the regression discontinuity identification strategy. I also create control vectors for regression discontinuity.
+```{r}
+rd <- dropped |> 
+  mutate(Per_pop_2 = (Per_pop_2 - 300) / 100) |> 
+  mutate(iv1 = (Per_pop_2 >= 0)) |> 
+  mutate(iv1_int = iv1 * Per_pop_2) |> 
+  mutate(iv1_int2 = iv1 * Per_pop_2^2) |> 
+  mutate(iv1_int3 = iv1 * Per_pop_2^3) |> 
+  mutate(iv1_int4 = iv1 * Per_pop_2^4) |> 
+  filter(abs(Per_pop_2) <= 1.058) |> 
+  subset(Budget_income_2 > 1000000 & GRP_2 > 10000000)
+
+mrd_controls <- colnames(rd)
+mrd_controls <- mrd_controls[c(12, 14:20, 50, 105:106)]
+mrd_controls <- paste(mrd_controls, collapse = " + ")
+
+crd_controls <- colnames(rd)
+crd_controls <- crd_controls[c(59, 100:101)]
+crd_controls <- paste(crd_controls, collapse = " + ")
+
+psrd_controls <- colnames(rd) |> 
+  str_subset("PS_")
+psrd_controls <- psrd_controls[c(1:8, 16:18)]
+psrd_controls <- paste(psrd_controls, collapse = " + ")
+```
+
+# 5.2
+This code runs the regression discontinuity identification strategy for mayors' promotion used by Lei and Zhou. It runs each of the models in Table 3: fuzzy RD, fuzzy RD with mayor controls, fuzzy RD with mayor and city controls.
+```{r}
+mayor_rd1 <- glue("Mayor_promotion3y ~ Per_pop_2 + iv1_int + i(provinceyear) + i(City_Code) | Mayor_plan ~ iv1")
+mayor_rd1 <- feols(as.formula(mayor_rd1), data = rd, cluster = "City_Code")
+
+mayor_rd2 <- glue("Mayor_promotion3y ~ Per_pop_2 + iv1_int + {mrd_controls} + i(provinceyear) + i(City_Code) | Mayor_plan ~ iv1")
+mayor_rd2 <- feols(as.formula(mayor_rd2), data = rd, cluster = "City_Code")
+
+mayor_rd3 <- glue("Mayor_promotion3y ~ Per_pop_2 + iv1_int + {mrd_controls} + {crd_controls} + i(provinceyear) + i(City_Code) | Mayor_plan ~ iv1")
+mayor_rd3 <- feols(as.formula(mayor_rd3), data = rd, cluster = "City_Code")
+
+modelsummary(list(mayor_rd1, mayor_rd2, mayor_rd3),
+             coef_map = c("fit_Mayor_plan", "Per_pop_2", "iv1_int"),
+             gof_map = c("nobs"))
+```
+
+# 5.3
+This code runs the regression discontinuity identification strategy on party secretaries' and mayors' promotion after high-speed rail approval. It uses the same model specifications as in 6.2, but treats 1 million as the cutoff for high-speed rail construction based on public statements by Chinese officials from the early 2010s. I do not use this table in the paper because it is not clear that the regression discontinuity identification strategy is valid.
+```{r}
+hsr_rd <- dropped |> 
+  mutate(Per_pop_2 = (Per_pop_2 - 100) / 100) |> 
+  mutate(iv1 = (Per_pop_2 >= 0)) |> 
+  mutate(iv1_int = iv1 * Per_pop_2) |> 
+  mutate(iv1_int2 = iv1 * Per_pop_2^2) |> 
+  mutate(iv1_int3 = iv1 * Per_pop_2^3) |> 
+  mutate(iv1_int4 = iv1 * Per_pop_2^4) |> 
+  filter(abs(Per_pop_2) <= 1.058)
+
+mhsr_rd1 <- glue("Mayor_promotion3y ~ Per_pop_2 + iv1_int + i(provinceyear) + i(City_Code) | HSR_Approval ~ iv1")
+mhsr_rd1 <- feols(as.formula(mhsr_rd1), data = hsr_rd, cluster = "City_Code")
+
+mhsr_rd2 <- glue("Mayor_promotion3y ~ Per_pop_2 + iv1_int + {mrd_controls} + i(provinceyear) + i(City_Code) | HSR_Approval ~ iv1")
+mhsr_rd2 <- feols(as.formula(mhsr_rd2), data = hsr_rd, cluster = "City_Code")
+
+mhsr_rd3 <- glue("PS_promotion3y ~ Per_pop_2 + iv1_int + {mrd_controls} + {crd_controls} + i(provinceyear) + i(City_Code) | HSR_Approval ~ iv1")
+mhsr_rd3 <- feols(as.formula(mhsr_rd3), data = hsr_rd, cluster = "City_Code")
+
+ps_rd1 <- glue("PS_promotion3y ~ Per_pop_2 + iv1_int + i(provinceyear) + i(City_Code) | HSR_Approval ~ iv1")
+ps_rd1 <- feols(as.formula(ps_rd1), data = hsr_rd, cluster = "City_Code")
+
+ps_rd2 <- glue("PS_promotion3y ~ Per_pop_2 + iv1_int + {psrd_controls} + i(provinceyear) + i(City_Code) | HSR_Approval ~ iv1")
+ps_rd2 <- feols(as.formula(ps_rd2), data = hsr_rd, cluster = "City_Code")
+
+ps_rd3 <- glue("PS_promotion3y ~ Per_pop_2 + iv1_int + {psrd_controls} + {crd_controls} + i(provinceyear) + i(City_Code) | HSR_Approval ~ iv1")
+ps_rd3 <- feols(as.formula(ps_rd3), data = hsr_rd, cluster = "City_Code")
+
+apptable1 <- modelsummary(list(mhsr_rd1, mhsr_rd2, mhsr_rd3, ps_rd1, ps_rd2, ps_rd3),
+             coef_map = c("fit_HSR_Approval", "Per_pop_2", "iv1_int"),
+             gof_map = c("nobs"),
+             output = "gt")
+
+apptable1 |> 
+  gtsave("tableA1_rd.tex")
+```
+
+# 6.1
+This is the code to prepare to create Figure 3 in Lei and Zhou. I add lead and lag variables to an updated version of the "combo" dataset. I also create mayor controls.
+```{r}
+mech <- combo |> 
+  mutate(
+    prior1 = as.integer(First_Plan_Passed == 0 & lead(First_Plan_Passed, n = 1L) == 1),
+    prior2 = as.integer(First_Plan_Passed == 0 & lead(First_Plan_Passed, n = 1L) == 0 & lead(First_Plan_Passed, n = 2L) == 1),
+    prior3 = as.integer(First_Plan_Passed == 0 & lead(First_Plan_Passed, n = 1L) == 0 & lead(First_Plan_Passed, n = 2L) == 0 & lead(First_Plan_Passed, n = 3L) == 1),
+    prior4 = as.integer(First_Plan_Passed == 0 & lead(First_Plan_Passed, n = 1L) == 0 & lead(First_Plan_Passed, n = 2L) == 0 & lead(First_Plan_Passed, n = 3L) == 0 & lead(First_Plan_Passed, n = 4L) == 1),
+    prior5 = as.integer(with_subway == 1 & First_Plan_Passed == 0 & prior4 == 0 & prior3 == 0 & prior2 == 0 & prior1 == 0),
+    conn1 = as.integer(First_Plan_Passed == 1 & lag(First_Plan_Passed, n = 1L) == 0),
+    conn2 = as.integer(First_Plan_Passed == 1 & lag(First_Plan_Passed, n = 1L) == 1 & lag(First_Plan_Passed, n = 2L) == 0),
+    conn3 = as.integer(First_Plan_Passed == 1 & lag(First_Plan_Passed, n = 1L) == 1 & lag(First_Plan_Passed, n = 2L) == 1 & lag(First_Plan_Passed, n = 3L) == 0),
+    conn4 = as.integer(First_Plan_Passed == 1 & lag(First_Plan_Passed, n = 1L) == 1 & lag(First_Plan_Passed, n = 2L) & lag(First_Plan_Passed, n = 3L) & lag(First_Plan_Passed, n = 4L) == 0),
+    conn5 = as.integer(First_Plan_Passed == 1 & conn1 == 0 & conn2 == 0 & conn3 == 0 & conn4 == 0)
+  )
+
+mm_controls <- colnames(mech)
+mm_controls <- mm_controls[c(12, 14:20, 50, 105:106)]
+mm_controls <- paste(mm_controls, collapse = " + ")
+
+```
+
+# 6.2
+To recreate Figure 3 in Lei and Zhou, I regress the four measures of economic performance on the lead and lag values to see if the causal mechanism for mayors investing in subway infrastructure holds.
+```{r}
+infra <- glue("inv1_per ~ prior2 + prior3 + prior4 + prior5 + conn1 + conn2 + conn3 + conn4 + conn5 + {mm_controls} + lpop_1 + lrev_1 + GRP_growth_1 + i(Year) | City_Code")
+infra <- feols(as.formula(infra), data = mech, cluster = ~City_Code)
+
+pcgdp <- glue("GRP_per ~ prior2 + prior3 + prior4 + prior5 + conn1 + conn2 + conn3 + conn4 + conn5 + {mm_controls} + lpop_1 + lrev_1 + GRP_growth_1 + i(Year) | City_Code")
+pcgdp <- feols(as.formula(pcgdp), data = mech, cluster = ~City_Code)
+
+landrev <- glue("land_per ~ prior2 + prior3 + prior4 + prior5 + conn1 + conn2 + conn3 + conn4 + conn5 + {mm_controls} + lpop_1 + lrev_1 + GRP_growth_1 + i(Year) | City_Code")
+landrev <- feols(as.formula(landrev), data = mech, cluster = ~City_Code)
+
+fiscrev <- glue("rev_per ~ prior2 + prior3 + prior4 + prior5 + conn1 + conn2 + conn3 + conn4 + conn5 + {mm_controls} + lpop_1 + lrev_1 + GRP_growth_1 + i(Year) | City_Code")
+fiscrev <- feols(as.formula(fiscrev), data = mech, cluster = ~City_Code)
+
+
+modelplot(infra,
+          coef_map = c(
+            "prior5" = "-5",
+            "prior4" = "-4",
+            "prior3" = "-3",
+            "prior2" = "-2",
+            "conn1" = "0",
+            "conn2" = "1",
+            "conn3" = "2",
+            "conn4" = "3",
+            "conn5" = "4"
+          )) +
+  coord_flip() +
+  labs(
+    title = "Dynamic Effects of Subway Approval on Infrastructure Investment",
+    y = "Year",
+    x = "Coefficients"
+  )
+
+```
+
+# 6.3
+To prepare to create Figure 1 in my paper, I add lead and lag variables to an updated version of the "combo" dataset. I begin by creating a new variable, "First_HSR_Approval," and then create the lead and lag variables.
+```{r}
+hsr_mech <- combo |> 
+  group_by("City_Code") |> 
+  mutate(First_HSR_Approval = cummax(HSR_Approval)) |> 
+  ungroup()
+
+hsr_mech <- hsr_mech |> 
+  mutate(
+    prior1 = as.integer(First_HSR_Approval == 0 & lead(First_HSR_Approval, n = 1L) == 1),
+    prior2 = as.integer(First_HSR_Approval == 0 & lead(First_HSR_Approval, n = 1L) == 0 & lead(First_HSR_Approval, n = 2L) == 1),
+    prior3 = as.integer(First_HSR_Approval == 0 & lead(First_HSR_Approval, n = 1L) == 0 & lead(First_HSR_Approval, n = 2L) == 0 & lead(First_HSR_Approval, n = 3L) == 1),
+    prior4 = as.integer(First_HSR_Approval == 0 & lead(First_HSR_Approval, n = 1L) == 0 & lead(First_HSR_Approval, n = 2L) == 0 & lead(First_HSR_Approval, n = 3L) == 0 & lead(First_HSR_Approval, n = 4L) == 1),
+    prior5 = as.integer(with_subway == 1 & First_HSR_Approval == 0 & prior4 == 0 & prior3 == 0 & prior2 == 0 & prior1 == 0),
+    conn1 = as.integer(First_HSR_Approval == 1 & lag(First_HSR_Approval, n = 1L) == 0),
+    conn2 = as.integer(First_HSR_Approval == 1 & lag(First_HSR_Approval, n = 1L) == 1 & lag(First_HSR_Approval, n = 2L) == 0),
+    conn3 = as.integer(First_HSR_Approval == 1 & lag(First_HSR_Approval, n = 1L) == 1 & lag(First_HSR_Approval, n = 2L) == 1 & lag(First_HSR_Approval, n = 3L) == 0),
+    conn4 = as.integer(First_HSR_Approval == 1 & lag(First_HSR_Approval, n = 1L) == 1 & lag(First_HSR_Approval, n = 2L) & lag(First_HSR_Approval, n = 3L) & lag(First_HSR_Approval, n = 4L) == 0),
+    conn5 = as.integer(First_HSR_Approval == 1 & conn1 == 0 & conn2 == 0 & conn3 == 0 & conn4 == 0)
+  )
+
+mmhsr_controls <- colnames(hsr_mech)
+mmhsr_controls <- mmhsr_controls[c(12, 14:20, 50, 105:106)]
+mmhsr_controls <- paste(mmhsr_controls, collapse = " + ")
+
+psm_controls <- colnames(hsr_mech)
+psm_controls <- psm_controls[c(1:8, 16:18)]
+psm_controls <- paste(psm_controls, collapse = " + ")
+
+```
+
+# 6.4
+To create Figure 1 in my paper, I regress the four measures of economic performance on the lead and lag values to see if the causal mechanism for prefectural officials investing in high-speed rail infrastructure holds. I use both mayor and party secretary controls. I then also regress the unemployment rate on the lead and lag variables.
+```{r}
+infra_hsr <- glue("inv1_per ~ prior2 + prior3 + prior4 + prior5 + conn1 + conn2 + conn3 + conn4 + conn5 + {mmhsr_controls} + {psm_controls} + lpop_1 + lrev_1 + GRP_growth_1 + i(Year) | City_Code")
+infra_hsr <- feols(as.formula(infra_hsr), data = hsr_mech, cluster = ~City_Code)
+
+pcgdp_hsr <- glue("GRP_per ~ prior2 + prior3 + prior4 + prior5 + conn1 + conn2 + conn3 + conn4 + conn5 + {mmhsr_controls} + {psm_controls} + lpop_1 + lrev_1 + GRP_growth_1 + i(Year) | City_Code")
+pcgdp_hsr <- feols(as.formula(pcgdp_hsr), data = hsr_mech, cluster = ~City_Code)
+
+landrev_hsr <- glue("land_per ~ prior2 + prior3 + prior4 + prior5 + conn1 + conn2 + conn3 + conn4 + conn5 + {mmhsr_controls} + {psm_controls} + lpop_1 + lrev_1 + GRP_growth_1 + i(Year) | City_Code")
+landrev_hsr <- feols(as.formula(landrev_hsr), data = hsr_mech, cluster = ~City_Code)
+
+fiscrev_hsr <- glue("rev_per ~ prior2 + prior3 + prior4 + prior5 + conn1 + conn2 + conn3 + conn4 + conn5 + {mmhsr_controls} + {psm_controls} + lpop_1 + lrev_1 + GRP_growth_1 + i(Year) | City_Code")
+fiscrev_hsr <- feols(as.formula(fiscrev_hsr), data = hsr_mech, cluster = ~City_Code)
+
+ue_hsr <- glue("uerate ~ prior2 + prior3 + prior4 + prior5 + conn1 + conn2 + conn3 + conn4 + conn5 + {mmhsr_controls} + {psm_controls} + lpop_1 + lrev_1 + GRP_growth_1 + i(Year) | City_Code")
+ue_hsr <- feols(as.formula(ue_hsr), data = hsr_mech, cluster = ~City_Code)
+
+infraplot <- modelplot(infra_hsr,
+          coef_map = c(
+            "prior5" = "-5",
+            "prior4" = "-4",
+            "prior3" = "-3",
+            "prior2" = "-2",
+            "conn1" = "0",
+            "conn2" = "1",
+            "conn3" = "2",
+            "conn4" = "3",
+            "conn5" = "4"
+          )) +
+  coord_flip() +
+  labs(
+    title = "Infrastructure Investment",
+    y = "Year",
+    x = "Coefficients"
+  ) +
+  theme_grey()
+
+gdpplot <- modelplot(pcgdp_hsr,
+          coef_map = c(
+            "prior5" = "-5",
+            "prior4" = "-4",
+            "prior3" = "-3",
+            "prior2" = "-2",
+            "conn1" = "0",
+            "conn2" = "1",
+            "conn3" = "2",
+            "conn4" = "3",
+            "conn5" = "4"
+          )) +
+  coord_flip() +
+  labs(
+    title = "Per Capita GDP",
+    y = "Year",
+    x = "Coefficients"
+  ) +
+  theme_grey()
+
+landplot <- modelplot(landrev_hsr,
+          coef_map = c(
+            "prior5" = "-5",
+            "prior4" = "-4",
+            "prior3" = "-3",
+            "prior2" = "-2",
+            "conn1" = "0",
+            "conn2" = "1",
+            "conn3" = "2",
+            "conn4" = "3",
+            "conn5" = "4"
+          )) +
+  coord_flip() +
+  labs(
+    title = "Land Sales Revenue",
+    y = "Year",
+    x = "Coefficients"
+  ) +
+  theme_grey()
+
+fiscplot <- modelplot(fiscrev_hsr,
+          coef_map = c(
+            "prior5" = "-5",
+            "prior4" = "-4",
+            "prior3" = "-3",
+            "prior2" = "-2",
+            "conn1" = "0",
+            "conn2" = "1",
+            "conn3" = "2",
+            "conn4" = "3",
+            "conn5" = "4"
+          )) +
+  coord_flip() +
+  labs(
+    title = "Fiscal Revenue",
+    y = "Year",
+    x = "Coefficients"
+  ) +
+  theme_grey()
+
+ueplot <- modelplot(ue_hsr,
+          coef_map = c(
+            "prior5" = "-5",
+            "prior4" = "-4",
+            "prior3" = "-3",
+            "prior2" = "-2",
+            "conn1" = "0",
+            "conn2" = "1",
+            "conn3" = "2",
+            "conn4" = "3",
+            "conn5" = "4"
+          )) +
+  coord_flip() +
+  labs(
+    title = "Dynamic Effects of HSR Approval on Unemployment Rate",
+    y = "Year",
+    x = "Coefficients"
+  ) +
+  theme_grey()
+
+plot_grid(infraplot, gdpplot, landplot, fiscplot, ncol = 2, labels = "AUTO", rel_heights = c(0.75, 0.75, 0.75, 0.75)) 
+ggsave2("figure1_mech.png")
+```
+
+# 7.1
+This is the code for table 2 in the appendix. I got lazy with it.
+```{r}
+# Run the four mayoral specifications
+# Specification 1
+mayor_hsr1 <- glue("Mayor_promotion1y ~ lag(HSR_Approval, n = 2L) | City_Code + Year")
+mayor_hsr1 <- feols(as.formula(mayor_hsr1), data = combo, cluster = "City_Code")
+
+# Specification 2
+mayor_hsr2 <- glue("Mayor_promotion1y ~ lag(HSR_Approval, n = 2L) + {mayor_controls} | City_Code + Year")
+mayor_hsr2 <- feols(as.formula(mayor_hsr2), data = combo, cluster = "City_Code")
+
+# Specification 3
+mayor_hsr3 <- glue("Mayor_promotion1y ~ lag(HSR_Approval, n = 2L) + {mayor_controls} + {city_controls} | City_Code + Year")
+mayor_hsr3 <- feols(as.formula(mayor_hsr3), data = combo, cluster = "City_Code")
+
+# Specification 4
+mayor_hsr4 <- glue("Mayor_promotion1y ~ lag(HSR_Approval, n = 2L) + {mayor_controls} + {city_controls} | City_Code + Year + provinceyear")
+mayor_hsr4 <- feols(as.formula(mayor_hsr4), data = combo, cluster = "City_Code")
+
+# Run the four party secretary specifications
+# Specification 1
+ps_hsr1 <- glue("PS_promotion1y ~ lag(HSR_Approval, n = 2L) | City_Code + Year")
+ps_hsr1 <- feols(as.formula(ps_hsr1), data = combo, cluster = "City_Code")
+
+# Specification 2
+ps_hsr2 <- glue("PS_promotion1y ~ lag(HSR_Approval, n = 2L) + {ps_controls} | City_Code + Year")
+ps_hsr2 <- feols(as.formula(ps_hsr2), data = combo, cluster = "City_Code")
+
+# Specification 3
+ps_hsr3 <- glue("PS_promotion1y ~ lag(HSR_Approval, n = 2L) + {ps_controls} + {city_controls} | City_Code + Year")
+ps_hsr3 <- feols(as.formula(ps_hsr3), data = combo, cluster = "City_Code")
+
+# Specification 4
+ps_hsr4 <- glue("PS_promotion1y ~ lag(HSR_Approval, n = 2L) + {ps_controls} + {city_controls} | City_Code + Year + provinceyear")
+ps_hsr4 <- feols(as.formula(ps_hsr4), data = combo, cluster = "City_Code")
+
+# Regression Table
+table2a <- modelsummary(list(
+                  "(1)" = mayor_hsr1, 
+                  "(2)" = mayor_hsr2, 
+                  "(3)" = mayor_hsr3, 
+                  "(4)" = mayor_hsr4, 
+                  "(5)" = ps_hsr1, 
+                  "(6)" = ps_hsr2, 
+                  "(7)" = ps_hsr3, 
+                  "(8)" = ps_hsr4),
+                  coef_omit = -c(1),
+             gof_map = c("nobs", "FE: City_Code", "FE: Year", "FE: provinceyear"),
+             stars = TRUE,
+             output = "gt")
+
+table2a |> 
+  tab_header(title = "HSR Approval and Prefectural Official Promotion",
+             subtitle = "Promotion within one year") |> 
+  text_replace(pattern = "^HSR_Approval",
+               replacement = "HSR Approval") |> 
+  text_replace(pattern = "^FE: City_Code",
+               replacement = "City FE") |> 
+  text_replace(pattern = "^FE: Year",
+               replacement = "Year FE") |> 
+  text_replace(pattern = "^FE: provinceyear",
+               replacement = "Province-year FE") |> 
+  tab_spanner(label = "Mayor", columns = 2:5) |> 
+  tab_spanner(label = "Party Secretary", columns = 6:9) |> 
+  opt_align_table_header(align = "left") |> 
+  opt_table_font(font = system_fonts("transitional")) |> 
+  tab_caption(caption = "Standard errors in parentheses are clustered at the city level. Mayor controls are: gender, ethnicity, age, education, political connection with provincial party secretary, and previous work experience in county government, provincial government, central government, state-owned enterprises, university, and the Communist Youth League. Party secretary controls are: gender, ethnicity, age, education, political connection with provincial party secretary, and previous work experience in provincial government, central government, state-owned enterprises, university, and the Communist Youth League. City controls are population, GDP, fiscal revenue, and GDP growth rate in the previous year. FE means fixed effects. Mayor and city controls are taken from Lei and Zhou 2022.") |> 
+  gtsave("table2A_didreg.tex")
+  
+```
+
